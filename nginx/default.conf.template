@@ -1,0 +1,83 @@
+# Processado com envsubst na inicialização do container (LOCALSTACK_UPSTREAM, DNS_RESOLVER).
+
+upstream localstack {
+    server ${LOCALSTACK_UPSTREAM};
+}
+
+# As chaves do S3 podem ter caracteres codificados (%2B, %20, //). Usar $request_uri (sem decodificar)
+# garante que o LocalStack/AWS recebam o caminho exatamente como o SDK assinou.
+map $request_uri $localstack_uri {
+    ~^/localstack(?<ls_rest>/.*)$   $ls_rest;
+    ~^/localstack(?<ls_query>\?.*)$ /$ls_query;
+    default                         /;
+}
+
+map $request_uri $aws_s3_host {
+    ~^/aws-s3/(?<aws_h>[^/?]+)      $aws_h;
+    default                         "";
+}
+
+map $request_uri $aws_s3_uri {
+    ~^/aws-s3/[^/?]+(?<aws_p>/.*)$  $aws_p;
+    default                         /;
+}
+
+server {
+    listen 80;
+    server_name _;
+    root /usr/share/nginx/html;
+    merge_slashes off;
+
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+
+    # Mesmo papel do proxy do Vite: /localstack/* → LocalStack (evita CORS)
+    location /localstack {
+        # Respostas do S3 passam intactas: gzip aqui tiraria o Content-Length e mudaria o Content-Encoding dos objetos
+        gzip off;
+        proxy_pass http://localstack$localstack_uri;
+        proxy_http_version 1.1;
+        # A chamada já é same-origin para o navegador; sem remover o Origin o LocalStack
+        # aplica a política de CORS dele e responde 403 para origens como localhost:8081.
+        proxy_set_header Origin "";
+        proxy_set_header Referer "";
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_request_buffering off;
+        proxy_buffering off;
+        client_max_body_size 0;
+    }
+
+    # /aws-s3/<host>/<caminho> → https://<host>/<caminho>. Só hosts do S3 da AWS.
+    # O SDK assina para o host real; o proxy só entrega sem alterar nada (ListBuckets não tem CORS na AWS).
+    location /aws-s3/ {
+        if ($aws_s3_host !~* "^([a-z0-9][a-z0-9.-]*\.)?s3([.-][a-z0-9-]+)*\.amazonaws\.com$") {
+            return 403;
+        }
+        gzip off;
+        resolver ${DNS_RESOLVER} valid=60s ipv6=off;
+        proxy_pass https://$aws_s3_host$aws_s3_uri;
+        proxy_http_version 1.1;
+        proxy_ssl_server_name on;
+        proxy_ssl_name $aws_s3_host;
+        proxy_set_header Host $aws_s3_host;
+        proxy_set_header Origin "";
+        proxy_set_header Referer "";
+        proxy_set_header Cookie "";
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_request_buffering off;
+        proxy_buffering off;
+        client_max_body_size 0;
+    }
+
+    location /assets/ {
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        try_files $uri =404;
+    }
+
+    location / {
+        add_header Cache-Control "no-cache";
+        try_files $uri /index.html;
+    }
+}

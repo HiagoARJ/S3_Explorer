@@ -1,0 +1,33 @@
+services:
+  app:
+    build: .
+    image: localstack-s3-explorer:latest
+    container_name: s3-explorer
+    ports:
+      # 8080 já é usada pelo DynamoDB Explorer
+      - "8081:80"
+    environment:
+      # Padrão: LocalStack já rodando no host na porta 4566 (host:porta, sem http://).
+      # Com o perfil "localstack" abaixo, use DOCKER_LOCALSTACK_UPSTREAM=localstack:4566
+      - LOCALSTACK_UPSTREAM=${DOCKER_LOCALSTACK_UPSTREAM:-host.docker.internal:4566}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  # Opcional — só sobe com: docker compose --profile localstack up -d
+  # (não use se já houver outro LocalStack na porta 4566)
+  localstack:
+    profiles: ["localstack"]
+    image: localstack/localstack:latest
+    container_name: localstack-s3
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=s3
+      - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN:-}
+      - PERSISTENCE=1
+    volumes:
+      - localstack-data:/var/lib/localstack
+
+volumes:
+  localstack-data:
